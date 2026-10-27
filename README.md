@@ -22,7 +22,9 @@ arduino-cli lib install "NimBLE-Arduino"
 
 Windows 用 Git Bash，并且上面三个命令能直接运行。
 
-用 USB 接上板子。正常烧录不用按 BOOT 或 RST。只有一直停在等待下载时，才按住 BOOT、点一下 RST、再松开 BOOT。
+用 USB 接上板子，直接运行烧录命令。这块 ESP32-C3 不用按 BOOT 或 RST，脚本会自己通过串口进入下载。烧录时不要按这两个键，烧完也不用再按 RST。
+
+只有命令一直停在等待下载、串口也连不上时，才按住 BOOT、点一下 RST、再松开 BOOT，然后重新烧录。
 
 ## 烧录
 
