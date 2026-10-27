@@ -26,11 +26,9 @@ Windows 用 Git Bash，并且上面三个命令能直接运行。
 
 ## 烧录
 
-仓库名以横线开头，克隆时另起目录名：
-
 ```bash
-git clone https://github.com/DeekeScript/-ESP32-C3.git esp32-c3
-cd esp32-c3
+git clone https://github.com/DeekeScript/ESP32-C3.git
+cd ESP32-C3
 ```
 
 名称是 `DeekeScript-` 加 4 位。只写数字会补零，`1` 会变成 `0001`。
