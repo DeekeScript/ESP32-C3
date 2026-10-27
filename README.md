@@ -6,9 +6,9 @@ DeekeScript Pro 的蓝牙 Hid 固件。只支持 **ESP32-C3**，ESP32、S2、S3 
 
 ## 准备
 
-- [arduino-cli](https://arduino.github.io/arduino-cli/)，并装好 ESP32 核心和 NimBLE-Arduino
-- [esptool](https://github.com/espressif/esptool)
-- Python 3
+- <a href="https://arduino.github.io/arduino-cli/installation/" target="_blank" rel="noreferrer">arduino-cli</a>，并装好 ESP32 核心和 NimBLE-Arduino
+- <a href="https://github.com/espressif/esptool/releases" target="_blank" rel="noreferrer">esptool</a>
+- <a href="https://www.python.org/downloads/" target="_blank" rel="noreferrer">Python 3</a>
 
 macOS：
 
