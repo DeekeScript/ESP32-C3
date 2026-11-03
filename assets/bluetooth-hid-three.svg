@@ -1,0 +1,73 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 720" role="img" aria-label="三台手机分别蓝牙连接同一块 Hid，点击和输入排队执行">
+  <defs>
+    <pattern id="grid" width="24" height="24" patternUnits="userSpaceOnUse">
+      <path d="M 24 0 L 0 0 0 24" fill="none" stroke="#e4ebf2" stroke-width="1"/>
+    </pattern>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#243044"/>
+    </marker>
+  </defs>
+  <rect width="1040" height="720" fill="#f7f9fb"/>
+  <rect width="1040" height="720" fill="url(#grid)"/>
+
+  <rect x="28" y="28" width="230" height="470" rx="14" fill="#ffffff" stroke="#243044" stroke-width="2"/>
+  <text x="143" y="230" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="22" fill="#243044">蓝牙 Hid</text>
+  <text x="143" y="264" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="16" fill="#5c6b7a">DeekeScript-0001</text>
+  <text x="143" y="296" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="15" fill="#5c6b7a">最多同时 3 台</text>
+
+  <rect x="760" y="28" width="252" height="132" rx="14" fill="#ffffff" stroke="#243044" stroke-width="2"/>
+  <text x="886" y="78" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="20" fill="#243044">手机 A</text>
+  <rect x="804" y="96" width="164" height="42" rx="8" fill="#f4f7fb" stroke="#243044" stroke-width="1.5"/>
+  <text x="886" y="123" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="15" fill="#243044">DeekeScript</text>
+
+  <rect x="760" y="198" width="252" height="132" rx="14" fill="#ffffff" stroke="#243044" stroke-width="2"/>
+  <text x="886" y="248" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="20" fill="#243044">手机 B</text>
+  <rect x="804" y="266" width="164" height="42" rx="8" fill="#f4f7fb" stroke="#243044" stroke-width="1.5"/>
+  <text x="886" y="293" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="15" fill="#243044">DeekeScript</text>
+
+  <rect x="760" y="368" width="252" height="132" rx="14" fill="#ffffff" stroke="#243044" stroke-width="2"/>
+  <text x="886" y="418" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="20" fill="#243044">手机 C</text>
+  <rect x="804" y="436" width="164" height="42" rx="8" fill="#f4f7fb" stroke="#243044" stroke-width="1.5"/>
+  <text x="886" y="463" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="15" fill="#243044">DeekeScript</text>
+
+  <line x1="748" y1="70" x2="270" y2="70" stroke="#243044" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <rect x="430" y="48" width="92" height="24" rx="4" fill="#f7f9fb"/>
+  <text x="476" y="65" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="14" fill="#243044">蓝牙连接</text>
+  <line x1="270" y1="108" x2="748" y2="108" stroke="#243044" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <rect x="392" y="116" width="168" height="24" rx="4" fill="#f7f9fb"/>
+  <text x="476" y="133" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="14" fill="#243044">点击 (500, 800)</text>
+
+  <line x1="748" y1="240" x2="270" y2="240" stroke="#243044" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <rect x="430" y="218" width="92" height="24" rx="4" fill="#f7f9fb"/>
+  <text x="476" y="235" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="14" fill="#243044">蓝牙连接</text>
+  <line x1="270" y1="278" x2="748" y2="278" stroke="#243044" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <rect x="410" y="286" width="132" height="24" rx="4" fill="#f7f9fb"/>
+  <text x="476" y="303" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="14" fill="#243044">输入「你好」</text>
+
+  <line x1="748" y1="410" x2="270" y2="410" stroke="#243044" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <rect x="430" y="388" width="92" height="24" rx="4" fill="#f7f9fb"/>
+  <text x="476" y="405" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="14" fill="#243044">蓝牙连接</text>
+  <line x1="270" y1="448" x2="748" y2="448" stroke="#243044" stroke-width="1.6" marker-end="url(#arrow)"/>
+  <rect x="392" y="456" width="168" height="24" rx="4" fill="#f7f9fb"/>
+  <text x="476" y="473" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="14" fill="#243044">点击 (200, 400)</text>
+
+  <rect x="28" y="522" width="984" height="170" rx="14" fill="#ffffff" stroke="#243044" stroke-width="2"/>
+  <text x="520" y="558" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="18" fill="#243044">排队执行：先到的先做，做完一条再做下一条</text>
+
+  <rect x="52" y="582" width="250" height="64" rx="10" fill="#f4f7fb" stroke="#243044" stroke-width="1.5"/>
+  <text x="177" y="608" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="16" fill="#243044">1. 手机 A</text>
+  <text x="177" y="630" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="14" fill="#5c6b7a">点击 (500, 800)</text>
+
+  <line x1="314" y1="614" x2="378" y2="614" stroke="#243044" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <rect x="390" y="582" width="250" height="64" rx="10" fill="#f4f7fb" stroke="#243044" stroke-width="1.5"/>
+  <text x="515" y="608" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="16" fill="#243044">2. 手机 B</text>
+  <text x="515" y="630" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="14" fill="#5c6b7a">输入「你好」</text>
+
+  <line x1="652" y1="614" x2="716" y2="614" stroke="#243044" stroke-width="1.6" marker-end="url(#arrow)"/>
+
+  <rect x="728" y="582" width="250" height="64" rx="10" fill="#f4f7fb" stroke="#243044" stroke-width="1.5"/>
+  <text x="853" y="608" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="16" fill="#243044">3. 手机 C</text>
+  <text x="853" y="630" text-anchor="middle" font-family="PingFang SC, Microsoft YaHei, Noto Sans SC, sans-serif" font-size="14" fill="#5c6b7a">点击 (200, 400)</text>
+</svg>
