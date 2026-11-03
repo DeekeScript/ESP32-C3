@@ -2,7 +2,7 @@
 
 DeekeScript Pro 的蓝牙 Hid 固件。只支持 **ESP32-C3**，ESP32、S2、S3 不能用这份脚本。
 
-完整说明见 [Hid 烧录](https://script.deeke.cn/hid/bluetooth.html)。
+一块板最多同时连接 **3 台手机**。多台手机上的点击和输入会排队执行，不是并发。完整说明见 [Hid 烧录](https://script.deeke.cn/hid/bluetooth.html)。
 
 ## 准备
 
@@ -52,4 +52,4 @@ PORT=COM3 ./flash.sh DeekeScript-0001
 
 烧录结束会打印 `烧录完成: DeekeScript-0001`。Flash 按 DIO 接线，不要改成 QIO。
 
-手机蓝牙里搜索这个名称并配对。换过板子或改了名称时，取消旧名称的配对，只保留当前这块板。
+手机蓝牙里搜索这个名称并配对。换过板子或改了名称时，取消旧名称的配对，只保留当前这块板。升级固件后如果按键异常，可在手机上取消配对再重新配对，让系统重新读取按键表。

@@ -9,6 +9,7 @@
  * 描述符里带接触编号，内核会标成直接触摸，系统就按触摸屏处理，不再画鼠标箭头。
  * 横轴按屏幕宽度、纵轴按屏幕高度各自映射到 0..32767。
  * 蓝牙外观仍是键盘，列表图标和别人的板子一致。
+ * 最多同时连 3 台手机。每台的点击、按键和屏幕尺寸只发给发指令的那一台。
  */
 
 #include <Arduino.h>
@@ -17,11 +18,13 @@
 #include <Preferences.h>
 #include <esp_random.h>
 #include "hid_types.h"
+#include "host/ble_hs.h"
+#include "host/ble_store.h"
 
 #include <cmath>
 #include <cstring>
 
-static const uint16_t FW_VER = 7;
+static const uint16_t FW_VER = 14;
 static const char* CMD_SERVICE_UUID = "444b4844-0000-4000-8000-4445454b4501";
 static const char* CMD_CHAR_UUID = "444b4844-0000-4000-8000-4445454b4502";
 static const char* DATA_CHAR_UUID = "444b4844-0000-4000-8000-4445454b4503";
@@ -80,28 +83,209 @@ static uint8_t REPORT_MAP[] = {
     0x01, 0x75, 0x01, 0x95, 0x08, 0x81, 0x02, 0x95, 0x01, 0x75, 0x08, 0x81, 0x01, 0x95, 0x06, 0x75, 0x08, 0x15, 0x00,
     0x25, 0x73, 0x05, 0x07, 0x19, 0x00, 0x29, 0x73, 0x81, 0x00, 0xC0,
 
-    0x05, 0x0C, 0x09, 0x01, 0xA1, 0x01, 0x85, REPORT_CONSUMER, 0x15, 0x00, 0x26, 0xFF, 0x03, 0x19, 0x00, 0x2A, 0xFF,
-    0x03, 0x75, 0x10, 0x95, 0x01, 0x81, 0x00, 0xC0,
+    // vivo 会丢掉 0..1023 这一大段数组。报告值是用途列表里的下标，0 必须空着，否则 6 会落到 Home。
+    0x05, 0x0C, 0x09, 0x01, 0xA1, 0x01, 0x85, REPORT_CONSUMER, 0x15, 0x00, 0x25, 0x08, 0x09, 0x00, 0x09, 0x30, 0x09,
+    0x40, 0x09, 0xE9, 0x09, 0xEA, 0x0A, 0xA2, 0x01, 0x0A, 0x1D, 0x02, 0x0A, 0x23, 0x02, 0x0A, 0x24, 0x02, 0x75, 0x08,
+    0x95, 0x01, 0x81, 0x00, 0xC0,
 };
 
+static const int kMaxPeers = 3;
 static QueueHandle_t gQueue = nullptr;
+static QueueHandle_t gLinkQueue = nullptr;
+
+static const uint8_t LINK_ADV = 1;
+static const uint8_t LINK_STOP = 2;
+static const uint8_t LINK_PARAMS = 3;
+
+struct LinkCmd {
+    uint8_t op;
+    uint16_t handle;
+};
+
+// 触摸、键盘、消费键、指令通知。预编译协议栈只能持久化 8 条订阅，3 台手机会超过。
+static uint16_t gKeepCccd[4];
+static bool gAcceptUnstoredCccd = false;
+static ble_store_write_fn* gRealStoreWrite = nullptr;
+
+static bool keepCccd(uint16_t handle) {
+    if (handle == 0) {
+        return false;
+    }
+    for (uint16_t keep : gKeepCccd) {
+        if (keep == handle) {
+            return true;
+        }
+    }
+    return false;
+}
+
+// 存不下时不要让手机的订阅写入失败。失败的话系统会关掉这条通知，消费键就点不出去。
+static int storeWriteCccd(int obj_type, const union ble_store_value* val) {
+    if (gAcceptUnstoredCccd && obj_type == BLE_STORE_OBJ_TYPE_CCCD && val != nullptr &&
+        keepCccd(val->cccd.chr_val_handle)) {
+        gAcceptUnstoredCccd = false;
+        return 0;
+    }
+    if (gRealStoreWrite == nullptr) {
+        return BLE_HS_ENOTSUP;
+    }
+    return gRealStoreWrite(obj_type, val);
+}
+
+struct CccdKeep {
+    ble_addr_t addr;
+    uint16_t handle;
+    bool dropped;
+};
+
+extern "C" int dropOneCccd(int, union ble_store_value* value, void* cookie) {
+    auto* keep = static_cast<CccdKeep*>(cookie);
+    if (keep->dropped) {
+        return 1;
+    }
+    const ble_store_value_cccd& cccd = value->cccd;
+    if (ble_addr_cmp(&cccd.peer_addr, &keep->addr) == 0 && cccd.chr_val_handle == keep->handle) {
+        return 0;
+    }
+    for (uint16_t handle : gKeepCccd) {
+        if (handle != 0 && handle == cccd.chr_val_handle) {
+            return 0;
+        }
+    }
+    ble_store_key_cccd key{};
+    ble_store_key_from_value_cccd(&key, &cccd);
+    if (ble_store_delete_cccd(&key) == 0) {
+        keep->dropped = true;
+        Serial.println("drop old cccd");
+        return 1;
+    }
+    return 0;
+}
+
+static void tuneLink(uint16_t handle) {
+    ble_gap_upd_params params{};
+    params.itvl_min = 24;
+    params.itvl_max = 24;
+    params.latency = 0;
+    params.supervision_timeout = 400;
+    params.min_ce_len = 0;
+    params.max_ce_len = 0;
+    int rc = ble_gap_update_params(handle, &params);
+    Serial.printf("params %u rc=%d\n", handle, rc);
+}
+
+static void postLink(uint8_t op, uint16_t handle) {
+    if (gLinkQueue == nullptr) {
+        return;
+    }
+    LinkCmd cmd{op, handle};
+    xQueueSend(gLinkQueue, &cmd, 0);
+}
+
+class StoreCallbacks : public NimBLEDeviceCallbacks {
+    int onStoreStatus(struct ble_store_status_event* event, void* arg) override {
+        if (event != nullptr && event->event_code == BLE_STORE_EVENT_OVERFLOW &&
+            event->overflow.obj_type == BLE_STORE_OBJ_TYPE_CCCD && event->overflow.value != nullptr) {
+            CccdKeep keep{};
+            keep.addr = event->overflow.value->cccd.peer_addr;
+            keep.handle = event->overflow.value->cccd.chr_val_handle;
+            ble_store_iterate(BLE_STORE_OBJ_TYPE_CCCD, dropOneCccd, &keep);
+            if (keep.dropped) {
+                return 0;
+            }
+            if (keepCccd(keep.handle)) {
+                Serial.printf("cccd live h=%u\n", keep.handle);
+                gAcceptUnstoredCccd = true;
+                return 0;
+            }
+            return BLE_HS_ESTORE_CAP;
+        }
+        return ble_store_util_status_rr(event, arg);
+    }
+};
+
+static StoreCallbacks gStoreCallbacks;
+
+static void serviceLinks() {
+    if (gLinkQueue == nullptr) {
+        return;
+    }
+    NimBLEServer* server = NimBLEDevice::getServer();
+    NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+    if (server == nullptr || adv == nullptr) {
+        return;
+    }
+    LinkCmd cmd;
+    while (xQueueReceive(gLinkQueue, &cmd, 0) == pdTRUE) {
+        if (cmd.op == LINK_PARAMS) {
+            tuneLink(cmd.handle);
+            continue;
+        }
+        uint8_t peers = server->getConnectedCount();
+        if (cmd.op == LINK_STOP || peers >= kMaxPeers) {
+            if (adv->isAdvertising()) {
+                adv->stop();
+            }
+            Serial.printf("adv stop peers=%u\n", peers);
+            continue;
+        }
+        adv->setMinInterval(32);
+        adv->setMaxInterval(64);
+        bool ok = adv->isAdvertising() || adv->start();
+        Serial.printf("adv %s peers=%u\n", ok ? "on" : "fail", peers);
+        if (!ok) {
+            xQueueSend(gLinkQueue, &cmd, 0);
+            break;
+        }
+    }
+}
 static NimBLECharacteristic* gTouch = nullptr;
 static NimBLECharacteristic* gKeyboard = nullptr;
 static NimBLECharacteristic* gConsumer = nullptr;
 static NimBLECharacteristic* gData = nullptr;
 static NimBLEHIDDevice* gHid = nullptr;
 
-static int gScreenW = 1080;
-static int gScreenH = 1920;
-static int gLastX = 0;
-static int gLastY = 0;
-static bool gFinger = false;
-static uint16_t gRndLo = 30;
-static uint16_t gRndHi = 30;
-static uint8_t gMods = 0;
-static uint8_t gKeys[6] = {0, 0, 0, 0, 0, 0};
-static uint8_t gLastRaw[160];
-static uint16_t gLastRawLen = 0;
+static Peer gPeers[kMaxPeers];
+static Peer* gCur = nullptr;
+
+class ReportSubCallbacks : public NimBLECharacteristicCallbacks {
+    void onSubscribe(NimBLECharacteristic* chr, NimBLEConnInfo& info, uint16_t subValue) override {
+        const char* name = "data";
+        if (chr == gTouch) {
+            name = "touch";
+        } else if (chr == gKeyboard) {
+            name = "key";
+        } else if (chr == gConsumer) {
+            name = "consumer";
+        }
+        Serial.printf("sub %s conn=%u on=%u\n", name, info.getConnHandle(), subValue);
+    }
+};
+
+static ReportSubCallbacks gReportSubCallbacks;
+
+static Peer* peerFor(uint16_t handle) {
+    Peer* freeSlot = nullptr;
+    for (int i = 0; i < kMaxPeers; i++) {
+        if (gPeers[i].used && gPeers[i].handle == handle) {
+            return &gPeers[i];
+        }
+        if (!gPeers[i].used && freeSlot == nullptr) {
+            freeSlot = &gPeers[i];
+        }
+    }
+    if (freeSlot == nullptr) {
+        return nullptr;
+    }
+    memset(freeSlot, 0, sizeof(Peer));
+    freeSlot->used = true;
+    freeSlot->handle = handle;
+    freeSlot->screenW = 1080;
+    freeSlot->screenH = 1920;
+    freeSlot->rndLo = 30;
+    freeSlot->rndHi = 30;
+    return freeSlot;
+}
 
 static uint16_t ru16(const uint8_t* p) {
     return (uint16_t)(p[0] | (p[1] << 8));
@@ -121,8 +305,8 @@ static uint16_t scalePixel(int v, int size) {
     return (uint16_t)(((uint32_t)v * 32767u) / (uint32_t)size);
 }
 
-static void sendAck(uint8_t cmd, uint8_t status, const uint8_t* extra, uint16_t extraLen) {
-    if (gData == nullptr) {
+static void sendAckTo(uint16_t conn, uint8_t cmd, uint8_t status, const uint8_t* extra, uint16_t extraLen) {
+    if (gData == nullptr || conn == BLE_HS_CONN_HANDLE_NONE) {
         return;
     }
     uint8_t buf[183];
@@ -135,18 +319,25 @@ static void sendAck(uint8_t cmd, uint8_t status, const uint8_t* extra, uint16_t 
     if (extra != nullptr && extraLen > 0) {
         memcpy(buf + 3, extra, extraLen);
     }
-    gData->notify(buf, (size_t)(3 + extraLen));
+    gData->notify(buf, (size_t)(3 + extraLen), conn);
+}
+
+static void sendAck(uint8_t cmd, uint8_t status, const uint8_t* extra, uint16_t extraLen) {
+    if (gCur == nullptr) {
+        return;
+    }
+    sendAckTo(gCur->handle, cmd, status, extra, extraLen);
 }
 
 // 7 字节：指尖、接触编号、X、Y、接触数量。按下时数量为 1，抬起时为 0。
 static void sendTouch(uint8_t flags, int x, int y) {
-    if (gTouch == nullptr) {
+    if (gTouch == nullptr || gCur == nullptr) {
         return;
     }
-    gLastX = x;
-    gLastY = y;
-    uint16_t hx = scalePixel(x, gScreenW);
-    uint16_t hy = scalePixel(y, gScreenH);
+    gCur->lastX = x;
+    gCur->lastY = y;
+    uint16_t hx = scalePixel(x, gCur->screenW);
+    uint16_t hy = scalePixel(y, gCur->screenH);
     uint8_t down = (flags & 0x01) ? 1 : 0;
     uint8_t m[7] = {down,
                     0,
@@ -155,43 +346,43 @@ static void sendTouch(uint8_t flags, int x, int y) {
                     (uint8_t)(hy & 0xff),
                     (uint8_t)(hy >> 8),
                     down};
-    bool ok = gTouch->notify(m, sizeof(m));
+    bool ok = gTouch->notify(m, sizeof(m), gCur->handle);
     if (down && !ok) {
         Serial.println("touch notify failed");
     }
 }
 
 static void fingerDown(int x, int y) {
-    gFinger = true;
+    gCur->finger = true;
     sendTouch(0x01, x, y);
 }
 
 static void fingerMove(int x, int y) {
-    gFinger = true;
+    gCur->finger = true;
     sendTouch(0x01, x, y);
 }
 
 static void fingerUp() {
-    gFinger = false;
-    sendTouch(0x00, gLastX, gLastY);
+    gCur->finger = false;
+    sendTouch(0x00, gCur->lastX, gCur->lastY);
 }
 
 static void sendKeyboard() {
-    if (gKeyboard == nullptr) {
+    if (gKeyboard == nullptr || gCur == nullptr) {
         return;
     }
-    uint8_t r[8] = {gMods, 0, gKeys[0], gKeys[1], gKeys[2], gKeys[3], gKeys[4], gKeys[5]};
-    gKeyboard->notify(r, sizeof(r));
+    uint8_t r[8] = {gCur->mods, 0, gCur->keys[0], gCur->keys[1], gCur->keys[2], gCur->keys[3], gCur->keys[4], gCur->keys[5]};
+    gKeyboard->notify(r, sizeof(r), gCur->handle);
 }
 
 static void keyDown(uint8_t usage) {
-    for (uint8_t k : gKeys) {
+    for (uint8_t k : gCur->keys) {
         if (k == usage) {
             sendKeyboard();
             return;
         }
     }
-    for (uint8_t& k : gKeys) {
+    for (uint8_t& k : gCur->keys) {
         if (k == 0) {
             k = usage;
             sendKeyboard();
@@ -201,7 +392,7 @@ static void keyDown(uint8_t usage) {
 }
 
 static void keyUp(uint8_t usage) {
-    for (uint8_t& k : gKeys) {
+    for (uint8_t& k : gCur->keys) {
         if (k == usage) {
             k = 0;
         }
@@ -210,12 +401,12 @@ static void keyUp(uint8_t usage) {
 }
 
 static void keyUpAll() {
-    gMods = 0;
-    memset(gKeys, 0, sizeof(gKeys));
+    gCur->mods = 0;
+    memset(gCur->keys, 0, sizeof(gCur->keys));
     sendKeyboard();
-    if (gConsumer != nullptr) {
-        uint8_t z[2] = {0, 0};
-        gConsumer->notify(z, sizeof(z));
+    if (gConsumer != nullptr && gCur != nullptr) {
+        uint8_t z = 0;
+        gConsumer->notify(&z, 1, gCur->handle);
     }
 }
 
@@ -226,34 +417,62 @@ static void keyPress(uint8_t usage) {
 }
 
 static void combo(uint8_t mod, uint8_t usage) {
-    uint8_t saved = gMods;
-    gMods = (uint8_t)(gMods | mod);
+    uint8_t saved = gCur->mods;
+    gCur->mods = (uint8_t)(gCur->mods | mod);
     keyDown(usage);
     delay(30);
     keyUp(usage);
-    gMods = saved;
+    gCur->mods = saved;
     sendKeyboard();
 }
 
+static uint8_t consumerIndex(uint16_t usage) {
+    switch (usage) {
+        case 0x0030:
+            return 1;
+        case 0x0040:
+            return 2;
+        case 0x00E9:
+            return 3;
+        case 0x00EA:
+            return 4;
+        case 0x01A2:
+            return 5;
+        case 0x021D:
+            return 6;
+        case 0x0223:
+            return 7;
+        case 0x0224:
+            return 8;
+        default:
+            return 0;
+    }
+}
+
 static void consumer(uint16_t usage) {
-    if (gConsumer == nullptr) {
+    if (gConsumer == nullptr || gCur == nullptr) {
         return;
     }
-    uint8_t r[2] = {(uint8_t)(usage & 0xff), (uint8_t)(usage >> 8)};
-    gConsumer->notify(r, sizeof(r));
+    uint8_t index = consumerIndex(usage);
+    if (usage != 0 && index == 0) {
+        Serial.printf("consumer usage %u unmapped\n", usage);
+    }
+    if (!gConsumer->notify(&index, 1, gCur->handle)) {
+        Serial.printf("consumer notify fail usage=%u conn=%u chr=%u\n", usage, gCur->handle, gConsumer->getHandle());
+    }
 }
 
 static void consumerTap(uint16_t usage, uint16_t ms) {
     consumer(usage);
-    delay(ms == 0 ? 40 : ms);
+    delay(ms == 0 ? 100 : ms);
     consumer(0);
 }
 
 static int tapDelay() {
-    if (gRndHi <= gRndLo) {
-        return gRndLo;
+    if (gCur->rndHi <= gCur->rndLo) {
+        return gCur->rndLo;
     }
-    return gRndLo + (int)(esp_random() % (uint32_t)(gRndHi - gRndLo + 1));
+    return gCur->rndLo + (int)(esp_random() % (uint32_t)(gCur->rndHi - gCur->rndLo + 1));
 }
 
 static void runPath(int x1, int y1, int x2, int y2, int radian, int step, int downMs, int upMs, int gap, int times) {
@@ -304,8 +523,29 @@ static void runPath(int x1, int y1, int x2, int y2, int radian, int step, int do
     }
 }
 
+static void releasePeer(uint16_t handle) {
+    for (int i = 0; i < kMaxPeers; i++) {
+        if (!gPeers[i].used || gPeers[i].handle != handle) {
+            continue;
+        }
+        gCur = &gPeers[i];
+        if (gCur->finger) {
+            fingerUp();
+        }
+        keyUpAll();
+        gPeers[i].used = false;
+        gCur = nullptr;
+        return;
+    }
+}
+
 static void handle(const Cmd& cmd) {
-    if (cmd.len < 1) {
+    if (cmd.drop) {
+        releasePeer(cmd.conn);
+        return;
+    }
+    gCur = peerFor(cmd.conn);
+    if (gCur == nullptr || cmd.len < 1) {
         return;
     }
     const uint8_t op = cmd.data[0];
@@ -347,8 +587,8 @@ static void handle(const Cmd& cmd) {
                 sendAck(op, 1, nullptr, 0);
                 return;
             }
-            gLastX = ru16(p + 1);
-            gLastY = ru16(p + 3);
+            gCur->lastX = ru16(p + 1);
+            gCur->lastY = ru16(p + 3);
             fingerUp();
             sendAck(op, 0, nullptr, 0);
             return;
@@ -411,7 +651,7 @@ static void handle(const Cmd& cmd) {
                 sendAck(op, 1, nullptr, 0);
                 return;
             }
-            consumerTap(ru16(p + 1), 40);
+            consumerTap(ru16(p + 1), 100);
             sendAck(op, 0, nullptr, 0);
             return;
         case CMD_MOD_DOWN:
@@ -419,7 +659,7 @@ static void handle(const Cmd& cmd) {
                 sendAck(op, 1, nullptr, 0);
                 return;
             }
-            gMods = (uint8_t)(gMods | p[1]);
+            gCur->mods = (uint8_t)(gCur->mods | p[1]);
             sendKeyboard();
             sendAck(op, 0, nullptr, 0);
             return;
@@ -428,7 +668,7 @@ static void handle(const Cmd& cmd) {
                 sendAck(op, 1, nullptr, 0);
                 return;
             }
-            gMods = (uint8_t)(gMods & (uint8_t)~p[1]);
+            gCur->mods = (uint8_t)(gCur->mods & (uint8_t)~p[1]);
             sendKeyboard();
             sendAck(op, 0, nullptr, 0);
             return;
@@ -457,13 +697,13 @@ static void handle(const Cmd& cmd) {
                 sendAck(op, 1, nullptr, 0);
                 return;
             }
-            gScreenW = ru16(p + 1);
-            gScreenH = ru16(p + 3);
-            if (gScreenW < 2) {
-                gScreenW = 2;
+            gCur->screenW = ru16(p + 1);
+            gCur->screenH = ru16(p + 3);
+            if (gCur->screenW < 2) {
+                gCur->screenW = 2;
             }
-            if (gScreenH < 2) {
-                gScreenH = 2;
+            if (gCur->screenH < 2) {
+                gCur->screenH = 2;
             }
             sendAck(op, 0, nullptr, 0);
             return;
@@ -479,8 +719,8 @@ static void handle(const Cmd& cmd) {
                 a = b;
                 b = t;
             }
-            gRndLo = a;
-            gRndHi = b;
+            gCur->rndLo = a;
+            gCur->rndHi = b;
             sendAck(op, 0, nullptr, 0);
             return;
         }
@@ -521,18 +761,18 @@ static void handle(const Cmd& cmd) {
             return;
         }
         case CMD_GET:
-            sendAck(op, 0, gLastRaw, gLastRawLen);
+            sendAck(op, 0, gCur->lastRaw, gCur->lastRawLen);
             return;
         case CMD_RAW: {
             uint16_t n = (uint16_t)(cmd.len > 1 ? cmd.len - 1 : 0);
-            if (n > sizeof(gLastRaw)) {
-                n = sizeof(gLastRaw);
+            if (n > sizeof(gCur->lastRaw)) {
+                n = sizeof(gCur->lastRaw);
             }
             if (n > 0) {
-                memcpy(gLastRaw, p + 1, n);
+                memcpy(gCur->lastRaw, p + 1, n);
             }
-            gLastRawLen = n;
-            sendAck(op, 0, gLastRaw, gLastRawLen);
+            gCur->lastRawLen = n;
+            sendAck(op, 0, gCur->lastRaw, gCur->lastRawLen);
             return;
         }
         default:
@@ -551,37 +791,46 @@ static void hidTask(void*) {
 }
 
 class CmdCallbacks : public NimBLECharacteristicCallbacks {
-    void onWrite(NimBLECharacteristic* c, NimBLEConnInfo&) override {
+    void onWrite(NimBLECharacteristic* c, NimBLEConnInfo& info) override {
         NimBLEAttValue value = c->getValue();
         if (value.size() == 0 || value.size() > sizeof(Cmd::data)) {
             return;
         }
-        Cmd cmd;
+        Cmd cmd{};
+        cmd.conn = info.getConnHandle();
         cmd.len = value.size();
         memcpy(cmd.data, value.data(), value.size());
         if (gQueue == nullptr || xQueueSend(gQueue, &cmd, 0) != pdTRUE) {
-            sendAck(cmd.data[0], 2, nullptr, 0);
+            sendAckTo(cmd.conn, cmd.data[0], 2, nullptr, 0);
         }
     }
 };
 
 class ServerCallbacks : public NimBLEServerCallbacks {
-    void onConnect(NimBLEServer*, NimBLEConnInfo& info) override {
-        Serial.printf("connected %s\n", info.getAddress().toString().c_str());
+    void onConnect(NimBLEServer* server, NimBLEConnInfo& info) override {
+        Serial.printf("connected %s count=%u\n", info.getAddress().toString().c_str(), server->getConnectedCount());
         int mtuRc = ble_gattc_exchange_mtu(info.getConnHandle(), nullptr, nullptr);
         Serial.printf("mtu exchange %d\n", mtuRc);
         NimBLEDevice::startSecurity(info.getConnHandle());
+        postLink(server->getConnectedCount() < kMaxPeers ? LINK_ADV : LINK_STOP, 0);
     }
 
-    void onDisconnect(NimBLEServer*, NimBLEConnInfo&, int reason) override {
+    void onDisconnect(NimBLEServer*, NimBLEConnInfo& info, int reason) override {
         Serial.printf("disconnected %d\n", reason);
-        gFinger = false;
-        keyUpAll();
-        NimBLEDevice::startAdvertising();
+        Cmd cmd{};
+        cmd.drop = 1;
+        cmd.conn = info.getConnHandle();
+        if (gQueue != nullptr) {
+            xQueueSend(gQueue, &cmd, 0);
+        }
+        postLink(LINK_ADV, 0);
     }
 
     void onAuthenticationComplete(NimBLEConnInfo& info) override {
         Serial.printf("paired encrypted=%d\n", info.isEncrypted() ? 1 : 0);
+        if (info.isEncrypted()) {
+            postLink(LINK_PARAMS, info.getConnHandle());
+        }
     }
 };
 
@@ -593,9 +842,11 @@ void setup() {
     delay(200);
     Serial.printf("DeekeHid name=%s fw=%u map=%u\n", deviceName(), FW_VER, (unsigned)sizeof(REPORT_MAP));
 
-    gQueue = xQueueCreate(8, sizeof(Cmd));
+    gQueue = xQueueCreate(24, sizeof(Cmd));
+    gLinkQueue = xQueueCreate(8, sizeof(LinkCmd));
     xTaskCreate(hidTask, "deeke-hid", 8192, nullptr, 2, nullptr);
 
+    NimBLEDevice::setDeviceCallbacks(&gStoreCallbacks);
     NimBLEDevice::init(deviceName());
     ble_svc_gap_device_appearance_set(HID_KEYBOARD);
     NimBLEDevice::setMTU(185);
@@ -615,27 +866,54 @@ void setup() {
     gTouch = gHid->getInputReport(REPORT_TOUCH);
     gKeyboard = gHid->getInputReport(REPORT_KEYBOARD);
     gConsumer = gHid->getInputReport(REPORT_CONSUMER);
+    gTouch->setCallbacks(&gReportSubCallbacks);
+    gKeyboard->setCallbacks(&gReportSubCallbacks);
+    gConsumer->setCallbacks(&gReportSubCallbacks);
 
     NimBLEService* svc = server->createService(CMD_SERVICE_UUID);
     NimBLECharacteristic* cmd = svc->createCharacteristic(
         CMD_CHAR_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_ENC);
     cmd->setCallbacks(&gCmdCallbacks);
     gData = svc->createCharacteristic(DATA_CHAR_UUID, NIMBLE_PROPERTY::NOTIFY);
+    gData->setCallbacks(&gReportSubCallbacks);
 
     NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
-    adv->setName(deviceName());
-    adv->setAppearance(HID_KEYBOARD);
-    adv->addServiceUUID(gHid->getHidService()->getUUID());
+    adv->setMinInterval(32);
+    adv->setMaxInterval(64);
+    bool hidOk = adv->addServiceUUID(gHid->getHidService()->getUUID());
+    bool prefOk = adv->setPreferredParams(24, 24);
+    bool nameOk = adv->setName(deviceName());
     NimBLEAdvertisementData scan;
     scan.setName(deviceName());
     scan.setAppearance(HID_KEYBOARD);
-    scan.addServiceUUID(svc->getUUID());
-    adv->setScanResponseData(scan);
+    bool scanOk = adv->setScanResponseData(scan);
     adv->enableScanResponse(true);
-    adv->start();
-    Serial.println("advertising");
+    bool started = adv->start();
+    gKeepCccd[0] = gTouch->getHandle();
+    gKeepCccd[1] = gKeyboard->getHandle();
+    gKeepCccd[2] = gConsumer->getHandle();
+    gKeepCccd[3] = gData->getHandle();
+    if (gRealStoreWrite == nullptr) {
+        gRealStoreWrite = ble_hs_cfg.store_write_cb;
+        ble_hs_cfg.store_write_cb = storeWriteCccd;
+    }
+    Serial.printf("adv start=%d hid=%d pref=%d name=%d scan=%d bytes=%u cccd=%u,%u,%u,%u\n", started ? 1 : 0,
+                  hidOk ? 1 : 0, prefOk ? 1 : 0, nameOk ? 1 : 0, scanOk ? 1 : 0,
+                  (unsigned)adv->getAdvertisementData().getPayload().size(), gKeepCccd[0], gKeepCccd[1], gKeepCccd[2],
+                  gKeepCccd[3]);
 }
 
 void loop() {
-    delay(1000);
+    serviceLinks();
+    static uint32_t lastAdvCheck = 0;
+    uint32_t now = millis();
+    if (now - lastAdvCheck >= 1000) {
+        lastAdvCheck = now;
+        NimBLEServer* server = NimBLEDevice::getServer();
+        NimBLEAdvertising* adv = NimBLEDevice::getAdvertising();
+        if (server != nullptr && adv != nullptr && server->getConnectedCount() < kMaxPeers && !adv->isAdvertising()) {
+            postLink(LINK_ADV, 0);
+        }
+    }
+    delay(200);
 }
